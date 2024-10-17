@@ -124,6 +124,9 @@ static volatile unsigned long *dmar;
 static volatile unsigned long *dmaw;
 
 
+static DEFINE_MUTEX(dmacalc_mutex);
+
+
 MODULE_LICENSE("Dual MIT/GPL");
 
 #define DRIVER_NAME "fpga_dmacalc"
@@ -137,23 +140,36 @@ static struct cdev  dmacalc_cdev;
 static int dmacalc_open(struct inode *inode, struct file *file)
 {
     printk("dmacalc_open");
+
+    mutex_lock(&dmacalc_mutex);
+    mutex_unlock(&dmacalc_mutex);
+
     return 0;
 }
 
 static int dmacalc_close(struct inode *inode, struct file *file)
 {
     printk("dmacalc_close");
+
+    mutex_lock(&dmacalc_mutex);
+    mutex_unlock(&dmacalc_mutex);
+
     return 0;
 }
 
 static ssize_t dmacalc_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     printk("dmacalc_read");
+    mutex_lock(&dmacalc_mutex);
+    mutex_unlock(&dmacalc_mutex);
     return 0;
 }
 
 static ssize_t dmacalc_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
+    printk("dmacalc_write");
+    mutex_lock(&dmacalc_mutex);
+    mutex_unlock(&dmacalc_mutex);
     return 0;
 }
 
@@ -198,7 +214,7 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             unsigned long dst_offset = dst_addr & ~PAGE_MASK;
             unsigned long dst_size   = (calc.size + dst_offset + PAGE_SIZE - 1) / PAGE_SIZE;
 
-            if ( src_addr % 16 != 0 || dst_addr % 16 != 0 calc.size % 16 != 0 ) {
+            if ( src_addr % 16 != 0 || dst_addr % 16 != 0 || calc.size % 16 != 0 ) {
                 printk(KERN_ERR "Alignmant error\n");
                 printk("src_addr : %016lx\n", (unsigned long)src_addr); 
                 printk("dst_addr : %016lx\n", (unsigned long)dst_addr); 
@@ -206,10 +222,13 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                 return -EFAULT;
             }
 
+            mutex_lock(&dmacalc_mutex);
+
             if ( src_size > MAX_PAGES ) { src_size = MAX_PAGES; }
             ret = get_user_pages(src_base, src_size, FOLL_FORCE, src_pages, NULL);
             if (ret < 0) {
                 printk(KERN_ERR "Failed to get_user_pages: %d\n", ret);
+                mutex_unlock(&dmacalc_mutex);
                 return ret;
             }
 //          dma_addr_t src_dma_addr = page_to_phys(src_pages[0]);
@@ -224,6 +243,7 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             ret = get_user_pages(dst_base, dst_size, FOLL_WRITE, dst_pages, NULL);
             if (ret < 0) {
                 printk(KERN_ERR "Failed to get_user_pages: %d\n", ret);
+                mutex_unlock(&dmacalc_mutex);
                 return ret;
             }
 //          dma_addr_t dst_dma_addr = page_to_phys(dst_pages[0]);
@@ -241,9 +261,9 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                 unsigned long dst_n    = 0;
                 unsigned long dst_size = calc.size;
                 
-                dmar[REG_DMAR_PARAM_ARCACHE] = 0x0b;
+                dmar[REG_DMAR_PARAM_ARCACHE] = 0x0f;
                 dmar[REG_DMAR_PARAM_ARPROT]  = 0x02;
-                dmaw[REG_DMAW_PARAM_AWCACHE] = 0x0b;
+                dmaw[REG_DMAW_PARAM_AWCACHE] = 0x0f;
                 dmaw[REG_DMAW_PARAM_AWPROT]  = 0x02;
 
                 while ( src_size > 0 || dst_size > 0 ) {
@@ -294,6 +314,8 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             for ( i = 0; i < dst_size; i++ ) {
                 put_page(dst_pages[i]);
             }
+
+            mutex_unlock(&dmacalc_mutex);
         }
         break;
     
@@ -320,6 +342,8 @@ static struct class *dmacalc_class = NULL;
 static int dmacalc_init(void)
 {
     printk("dmacalc_init\n");
+
+    mutex_init(&dmacalc_mutex);
 
     int alloc_ret = 0;
     int cdev_err = 0;
