@@ -192,6 +192,20 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             unsigned long src_base   = src_addr & PAGE_MASK;
             unsigned long src_offset = src_addr & ~PAGE_MASK;
             unsigned long src_size   = (calc.size + src_offset + PAGE_SIZE - 1) / PAGE_SIZE;
+
+            unsigned long dst_addr   = (unsigned long)calc.dst;
+            unsigned long dst_base   = dst_addr & PAGE_MASK;
+            unsigned long dst_offset = dst_addr & ~PAGE_MASK;
+            unsigned long dst_size   = (calc.size + dst_offset + PAGE_SIZE - 1) / PAGE_SIZE;
+
+            if ( src_addr % 16 != 0 || dst_addr % 16 != 0 calc.size % 16 != 0 ) {
+                printk(KERN_ERR "Alignmant error\n");
+                printk("src_addr : %016lx\n", (unsigned long)src_addr); 
+                printk("dst_addr : %016lx\n", (unsigned long)dst_addr); 
+                printk("size     : %016lx\n", (unsigned long)calc.size); 
+                return -EFAULT;
+            }
+
             if ( src_size > MAX_PAGES ) { src_size = MAX_PAGES; }
             ret = get_user_pages(src_base, src_size, FOLL_FORCE, src_pages, NULL);
             if (ret < 0) {
@@ -206,10 +220,6 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 //          printk("src_pages[0] : %016lx\n", (unsigned long)src_pages[0]); 
 //          printk("src_dma_addr : %016lx\n", (unsigned long)src_dma_addr); 
 
-            unsigned long dst_addr   = (unsigned long)calc.dst;
-            unsigned long dst_base   = dst_addr & PAGE_MASK;
-            unsigned long dst_offset = dst_addr & ~PAGE_MASK;
-            unsigned long dst_size   = (calc.size + dst_offset + PAGE_SIZE - 1) / PAGE_SIZE;
             if ( dst_size > MAX_PAGES ) { dst_size = MAX_PAGES; }
             ret = get_user_pages(dst_base, dst_size, FOLL_WRITE, dst_pages, NULL);
             if (ret < 0) {
