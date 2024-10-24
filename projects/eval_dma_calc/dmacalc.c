@@ -93,6 +93,7 @@ static inline void arm64_clean_dcache_area(void* start, size_t size)
 
 // DMAの制御レジスタのオフセットアドレス
 #define REG_DMAR_CORE_ID            0x00
+#define REG_DMAR_CFG_DATA_BITS      0x04
 #define REG_DMAR_CTL_STATUS         0x08
 #define REG_DMAR_PARAM_ARID         0x10
 #define REG_DMAR_PARAM_ARADDR       0x11
@@ -106,6 +107,7 @@ static inline void arm64_clean_dcache_area(void* start, size_t size)
 #define REG_DMAR_PARAM_ARREGION     0x19
 
 #define REG_DMAW_CORE_ID            0x00
+#define REG_DMAW_CFG_DATA_BITS      0x04
 #define REG_DMAW_CTL_STATUS         0x08
 #define REG_DMAW_CTL_ISSUE_CNT      0x09
 #define REG_DMAW_PARAM_AWID         0x10
@@ -204,6 +206,14 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                 return -EFAULT;
             }
 
+            unsigned long r_unit = (dmar[REG_DMAR_CFG_DATA_BITS] / 8);
+            unsigned long w_unit = (dmar[REG_DMAW_CFG_DATA_BITS] / 8);
+            if ( r_unit == 0 ) { r_unit = 128/8; }
+            if ( w_unit == 0 ) { w_unit = 128/8; }
+            if ( r_unit != w_unit ) {
+                return -EFAULT;
+            }
+
             unsigned long src_addr   = (unsigned long)calc.src;
             unsigned long src_base   = src_addr & PAGE_MASK;
             unsigned long src_offset = src_addr & ~PAGE_MASK;
@@ -214,11 +224,11 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             unsigned long dst_offset = dst_addr & ~PAGE_MASK;
             unsigned long dst_size   = (calc.size + dst_offset + PAGE_SIZE - 1) / PAGE_SIZE;
 
-            if ( src_addr % 16 != 0 || dst_addr % 16 != 0 || calc.size % 16 != 0 ) {
+            if ( src_addr % r_unit != 0 || dst_addr % w_unit != 0 || calc.size % r_unit != 0 ) {
                 printk(KERN_ERR "Alignmant error\n");
-                printk("src_addr : %016lx\n", (unsigned long)src_addr); 
-                printk("dst_addr : %016lx\n", (unsigned long)dst_addr); 
-                printk("size     : %016lx\n", (unsigned long)calc.size); 
+                printk(KERN_ERR "src_addr : %016lx\n", (unsigned long)src_addr); 
+                printk(KERN_ERR "dst_addr : %016lx\n", (unsigned long)dst_addr); 
+                printk(KERN_ERR "size     : %016lx\n", (unsigned long)calc.size); 
                 return -EFAULT;
             }
 
@@ -274,23 +284,61 @@ static long dmacalc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                         unsigned long len  = PAGE_SIZE - src_offset;
                         if ( len > src_size ) { len = src_size; }
                         arm64_clean_dcache_area(ptr, len);
-                        dmar[REG_DMAR_PARAM_ARLEN]   = (len / 16) - 1;
-                        dmar[REG_DMAR_PARAM_ARADDR]  = addr + src_offset;
+                        
+                        unsigned long arlen = len / r_unit;
+                        while ( arlen > 0 ) {
+                            while ( dmar[REG_DMAR_CTL_STATUS] != 0) {
+                                udelay(1);
+                            }
+                            if ( arlen >= 256 ) {
+                                dmar[REG_DMAR_PARAM_ARLEN]  = 0xff;
+                                dmar[REG_DMAR_PARAM_ARADDR] = addr + src_offset;
+                                arlen -= 256;
+                                addr  += 256 * r_unit;
+                            }
+                            else {
+                                dmar[REG_DMAR_PARAM_ARLEN]  = arlen - 1;
+                                dmar[REG_DMAR_PARAM_ARADDR] = addr + src_offset;
+                                arlen = 0;
+                            }
+                        }
+//                      dmar[REG_DMAR_PARAM_ARLEN]   = (len / 16) - 1;
+//                      dmar[REG_DMAR_PARAM_ARADDR]  = addr + src_offset;
+
                         kunmap(kbuf);
                         src_offset  = 0;
                         src_n      += 1;
                         src_size   -= len;
                     }
 
-                      if ( dst_size > 0 && dmaw[REG_DMAW_CTL_STATUS] == 0 ) {
+                    if ( dst_size > 0 && dmaw[REG_DMAW_CTL_STATUS] == 0 ) {
                         dma_addr_t    addr = page_to_phys(dst_pages[dst_n]);
                         void         *kbuf = kmap(dst_pages[dst_n]);
                         void         *ptr  = (void *)((unsigned long)kbuf + dst_offset);
                         unsigned long len  = PAGE_SIZE - dst_offset;
                         if ( len > dst_size ) { len = dst_size; }
                         arm64_inval_dcache_area(ptr, len);
-                        dmaw[REG_DMAW_PARAM_AWLEN]   = (len / 16) - 1;
-                        dmaw[REG_DMAW_PARAM_AWADDR]  = addr + dst_offset;
+
+                        unsigned long awlen = len / w_unit;
+                        while ( awlen > 0 ) {
+                            while ( dmaw[REG_DMAW_CTL_STATUS] != 0) {
+                                udelay(1);
+                            }
+                            if ( awlen >= 256 ) {
+                                dmaw[REG_DMAW_PARAM_AWLEN]  = 0xff;
+                                dmaw[REG_DMAW_PARAM_AWADDR] = addr + dst_offset;
+                                awlen -= 256;
+                                addr  += 256 * w_unit;
+                            }
+                            else {
+                                dmaw[REG_DMAW_PARAM_AWLEN]  = awlen - 1;
+                                dmaw[REG_DMAW_PARAM_AWADDR] = addr + dst_offset;
+                                awlen = 0;
+                            }
+                        }
+//                      dmaw[REG_DMAW_PARAM_AWLEN]   = (len / 16) - 1;
+//                      dmaw[REG_DMAW_PARAM_AWADDR]  = addr + dst_offset;
+
                         kunmap(kbuf);
                         dst_offset  = 0;
                         dst_n      += 1;
@@ -387,6 +435,8 @@ static int dmacalc_init(void)
 //  printk("dmaw    : %016lx\n", (unsigned long)dmaw);
 //  printk("dmar ID : %08lx\n", dmar[REG_DMAR_CORE_ID]);
 //  printk("dmaw ID : %08lx\n", dmaw[REG_DMAW_CORE_ID]);
+//  printk("dmar bis : %ld\n", dmar[REG_DMAR_CFG_DATA_BITS]);
+//  printk("dmaw bis : %ld\n", dmaw[REG_DMAW_CFG_DATA_BITS]);
 //  printk("arm64_read_dcache_line_size : %08lx\n", (unsigned long)arm64_read_dcache_line_size());
 
     return 0;
